@@ -5,7 +5,7 @@ metadata:
   name: node-exporter
   namespace: monitoring
   annotations:
-# these annotations are need at service level for prometheus to scrape the metrics from service
+  ## these annotations are need at service level for prometheus to scrape the metrics from service
       prometheus.io/scrape: 'true'
       prometheus.io/port:   '9100'
 spec:
