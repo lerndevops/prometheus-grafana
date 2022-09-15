@@ -204,7 +204,7 @@ data:
         smarthost: smtp.gmail.com:587 # valid smtp host in this case gmail
         auth_username: lerndevops05@gmail.com
         auth_identity: lerndevops05@gmail.com
-        auth_password: etosvzumjhsxliuo # giving sender gmail password is also fine but we suggest generate an app password and use it here.To do that, go to Google Account Settings -> Security -> Signing in to Google -> App password
+        auth_password: "" # giving sender gmail password is also fine but we suggest generate an app password and use it here.To do that, go to Google Account Settings -> Security -> Signing in to Google -> App password
 ---
 apiVersion: v1
 kind: Service
