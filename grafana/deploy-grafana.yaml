@@ -1,0 +1,119 @@
+## Thsi config map helps to persiste the datasource configuration and also avoids manual setup of datasource everytime the pod restarts
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  prometheus.yaml: |-
+    {
+        "apiVersion": 1,
+        "datasources": [
+            {
+               "access":"proxy",
+                "editable": true,
+                "name": "prometheus", # name of datasource.we will be using this in dashboards
+                "orgId": 1,
+                "type": "prometheus", #type of datasource
+                "url": "http://prometheus-service.monitoring.svc:8080", # prometheus inservice communication
+                "version": 1
+            }
+        ]
+    }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: grafana-storage-pv
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 3Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/grafana-data"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-storage-pvc
+  namespace: monitoring
+  labels:
+    vol: prom-storage
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 3Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations: # prometheus server to scrape the metrics from this endpoint
+      prometheus.io/scrape: 'true'
+      prometheus.io/port:   '3000'
+spec:
+  selector: 
+    app: grafana
+  type: NodePort  
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 32000 # port using which we can access grafana UI with any of kube node IP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      name: grafana
+      labels:
+        app: grafana
+    spec:
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0
+      containers:
+      - name: grafana
+        image: grafana/grafana:latest
+        ports:
+        - name: grafana
+          containerPort: 3000
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+          requests: 
+            memory: 500M
+            cpu: "500m"
+        volumeMounts:
+          - mountPath: /var/lib/grafana # path for grafana db which holds all configs related to grafana and is persisted using host volumes
+            name: grafana-storage
+          - mountPath: /etc/grafana/provisioning/datasources # datasource path for grafana which omes from config map created
+            name: grafana-datasources
+            readOnly: false
+      #nodeSelector:
+      #  kubernetes.io/hostname: worker2 # restricting this to worker2 as we are using host volumes..This can removed in case of prod setup where you have dynamic provisioning of storage
+      volumes:
+        - name: grafana-storage
+          persistentVolumeClaim:
+           claimName: grafana-storage-pvc # pvc to bind the pv with pod
+        - name: grafana-datasources
+          configMap:
+              defaultMode: 420
+              name: grafana-datasources # config map holding datasource configs

@@ -1,0 +1,550 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: monitoring
+  name: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-server-conf
+  labels:
+    name: prometheus-server-conf
+  namespace: monitoring
+data:
+  prometheus.rules: |-
+    groups:
+    - name: Sample alert # keeps triggering all time..just to test the setup
+      rules:
+      - alert: High Pod Memory
+        expr: sum(container_memory_usage_bytes) > 1
+        for: 1m
+        labels:
+          severity: high
+        annotations:
+          summary: High Memory Usage
+    - name: k8s.rules
+      rules:
+      - expr: |
+          sum(rate(container_cpu_usage_seconds_total{job="kubernetes-cadvisor", image!="", container!=""}[5m])) by (namespace)
+        record: namespace_container_cpu_usage_seconds_total_sum_rate
+      - expr: |
+          sum(container_memory_usage_bytes{job="kubernetes-cadvisor", image!="", container!=""}) by (namespace)
+        record: namespace_container_memory_usage_bytes_sum          
+    - name: Target Down
+      rules:
+      - alert: TargetDown
+        annotations:
+          message: '{{ $value }}% of the {{ $labels.job }} targets are down.'
+        expr: 100 * (count(up == 0) BY (job) / count(up) BY (job)) > 10
+        for: 1m
+        labels:
+          severity: high
+    - name: kubernetes-individual-targets
+      rules:
+      - alert: AlertmanagerDown
+        annotations:
+          message: Alertmanager has disappeared from Prometheus target discovery.
+        expr: |
+          absent(up{job="kubernetes-service-endpoints", kubernetes_name="alertmanager",kubernetes_namespace="monitoring"} == 1)
+        for: 15m
+        labels:
+          severity: critical
+      - alert: CoreDNSDown
+        annotations:
+          message: CoreDNS has disappeared from Prometheus target discovery.
+        expr: |
+          absent(up{job="kubernetes-service-endpoints", kubernetes_name="kube-dns"} == 1)
+        for: 15m
+        labels:
+          severity: critical
+      - alert: KubeAPIDown
+        annotations:
+          message: KubeAPI has disappeared from Prometheus target discovery.
+        expr: |
+          absent(up{ job="kubernetes-apiservers"} == 1)
+        for: 15m
+        labels:
+          severity: critical
+      - alert: KubeStateMetricsDown
+        annotations:
+          message: KubeStateMetrics has disappeared from Prometheus target discovery.
+        expr: |
+          absent(up{job="kube-state-metrics"} == 1)
+        for: 15m
+        labels:
+          severity: critical
+      - alert: KubernetesNodesDown
+        annotations:
+          message: Kubelet has disappeared from Prometheus target discovery.
+        expr: |
+          absent(up{job="kubernetes-nodes"} == 1)
+        for: 15m
+        labels:
+          severity: critical
+      - alert: NodeExporterDown
+        annotations:
+          message: NodeExporter has disappeared from Prometheus target discovery.
+        expr: |
+          absent(up{job="node-exporter"} == 1)
+        for: 15m
+        labels:
+          severity: critical
+      - alert: PrometheusDown
+        annotations:
+          message: Prometheus has disappeared from Prometheus target discovery.
+        expr: |
+          absent(up{job="kubernetes-service-endpoints", kubernetes_name="prometheus-service", kubernetes_namespace="monitoring"} == 1)
+        for: 15m
+        labels:
+          severity: critical          
+    - name: kubernetes-apps
+      rules:
+      - alert: KubePodCrashLooping
+        annotations:
+          message: Pod {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container
+            }}) is restarting {{ printf "%.2f" $value }} times / 5 minutes.
+        expr: |
+          rate(kube_pod_container_status_restarts_total{job="kube-state-metrics"}[15m]) * 60 * 5 > 0
+        for: 1h
+        labels:
+          severity: critical
+      - alert: KubePodNotReady
+        annotations:
+          message: Pod {{ $labels.namespace }}/{{ $labels.pod }} has been in a non-ready
+            state for longer than an hour.
+        expr: |
+          sum by (namespace, pod) (kube_pod_status_phase{job="kube-state-metrics", phase=~"Pending|Unknown"}) > 0
+        for: 15m
+        labels:
+          severity: critical
+      - alert: KubeDeploymentGenerationMismatch
+        annotations:
+          message: Deployment generation for {{ $labels.namespace }}/{{ $labels.deployment
+            }} does not match, this indicates that the Deployment has failed but has
+            not been rolled back.
+        expr: |
+          kube_deployment_status_observed_generation{job="kube-state-metrics"}
+            !=
+          kube_deployment_metadata_generation{job="kube-state-metrics"}
+        for: 15m
+        labels:
+          severity: critical
+      - alert: KubeDeploymentReplicasMismatch
+        annotations:
+          message: Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has not
+            matched the expected number of replicas for longer than an hour.
+        expr: |
+          kube_deployment_spec_replicas{job="kube-state-metrics"}
+            !=
+          kube_deployment_status_replicas_available{job="kube-state-metrics"}
+        for: 1h
+        labels:
+          severity: critical
+      - alert: KubeStatefulSetReplicasMismatch
+        annotations:
+          message: StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} has
+            not matched the expected number of replicas for longer than 15 minutes.
+        expr: |
+          kube_statefulset_status_replicas_ready{job="kube-state-metrics"}
+            !=
+          kube_statefulset_status_replicas{job="kube-state-metrics"}
+        for: 15m
+        labels:
+          severity: critical
+      - alert: KubeStatefulSetGenerationMismatch
+        annotations:
+          message: StatefulSet generation for {{ $labels.namespace }}/{{ $labels.statefulset
+            }} does not match, this indicates that the StatefulSet has failed but has
+            not been rolled back.
+        expr: |
+          kube_statefulset_status_observed_generation{job="kube-state-metrics"}
+            !=
+          kube_statefulset_metadata_generation{job="kube-state-metrics"}
+        for: 15m
+        labels:
+          severity: critical
+      - alert: KubeDaemonSetRolloutStuck
+        annotations:
+          message: Only {{ $value }}% of the desired Pods of DaemonSet {{ $labels.namespace
+            }}/{{ $labels.daemonset }} are scheduled and ready.
+        expr: |
+          kube_daemonset_status_number_ready{job="kube-state-metrics"}
+            /
+          kube_daemonset_status_desired_number_scheduled{job="kube-state-metrics"} * 100 < 100
+        for: 15m
+        labels:
+          severity: critical
+      - alert: KubeDaemonSetNotScheduled
+        annotations:
+          message: '{{ $value }} Pods of DaemonSet {{ $labels.namespace }}/{{ $labels.daemonset
+            }} are not scheduled.'
+        expr: |
+          kube_daemonset_status_desired_number_scheduled{job="kube-state-metrics"}
+            -
+          kube_daemonset_status_current_number_scheduled{job="kube-state-metrics"} > 0
+        for: 10m
+        labels:
+          severity: warning
+      - alert: KubeDaemonSetMisScheduled
+        annotations:
+          message: '{{ $value }} Pods of DaemonSet {{ $labels.namespace }}/{{ $labels.daemonset
+            }} are running where they are not supposed to run.'
+        expr: |
+          kube_daemonset_status_number_misscheduled{job="kube-state-metrics"} > 0
+        for: 10m
+        labels:
+          severity: warning
+    - name: Infrastructure alerts
+      rules:
+      - alert: Cluster Memory Usage
+        expr: sum(container_memory_working_set_bytes{id="/"})/sum(machine_memory_bytes{}) * 100 > 90
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: Cluster Memory Usage > 90%
+      - alert: Cluster CPU Usage 
+        expr: sum (rate (container_cpu_usage_seconds_total{id="/"}[5m])) / sum (machine_cpu_cores{}) * 100 > 90
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "Cluster CPU Usage  > 90%"
+          description: "Cluster CPU Usage on host {{$labels.instance}} : (current value: {{ $value }})." 
+    - name: kubernetes-system
+      rules:
+      - alert: KubeNodeNotReady
+        annotations:
+          message: '{{ $labels.node }} has been unready for more than an hour.'
+        expr: |
+          kube_node_status_condition{job="kube-state-metrics",condition="Ready",status="true"} == 0
+        for: 30m
+        labels:
+          severity: warning
+      - alert: KubeVersionMismatch
+        annotations:
+          message: There are {{ $value }} different semantic versions of Kubernetes
+            components running.
+        expr: |
+          count(count by (gitVersion) (label_replace(kubernetes_build_info{job!="kube-dns"},"gitVersion","$1","gitVersion","(v[0-9]*.[0-9]*.[0-9]*).*"))) > 1
+        for: 1h
+        labels:
+          severity: warning
+      - alert: KubeClientErrors
+        annotations:
+          message: Kubernetes API server client '{{ $labels.job }}/{{ $labels.instance
+            }}' is experiencing {{ printf "%0.0f" $value }}% errors.'
+        expr: |
+          (sum(rate(rest_client_requests_total{code=~"5.."}[5m])) by (instance, job)
+            /
+          sum(rate(rest_client_requests_total[5m])) by (instance, job))
+          * 100 > 1
+        for: 15m
+        labels:
+          severity: warning
+      - alert: KubeletTooManyPods
+        annotations:
+          message: Kubelet {{ $labels.instance }} is running {{ $value }} Pods, close
+            to the limit of 110.
+        expr: |
+          kubelet_running_pods{job="kubernetes-nodes"} > 110 * 0.9
+        for: 15m
+        labels:
+          severity: warning
+      - alert: KubeAPIErrorsHigh
+        annotations:
+          message: API server is returning errors for {{ $value }}% of requests for
+            {{ $labels.verb }} {{ $labels.resource }} {{ $labels.subresource }}.
+        expr: |
+          sum(rate(apiserver_request_total{job="kubernetes-apiservers",code=~"^(?:5..)$"}[5m])) by (resource,subresource,verb)
+            /
+          sum(rate(apiserver_request_total{job="kubernetes-apiservers"}[5m])) by (resource,subresource,verb) * 100 > 10
+        for: 10m
+        labels:
+          severity: critical
+    
+      - alert: KubeClientCertificateExpiration
+        annotations:
+          message: A client certificate used to authenticate to the apiserver is expiring
+            in less than 7.0 days.
+        expr: |
+          apiserver_client_certificate_expiration_seconds_count{job="kubernetes-apiservers"} > 0 and histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_expiration_seconds_bucket{job="kubernetes-apiservers"}[5m]))) < 604800
+        labels:
+          severity: warning
+      - alert: KubeClientCertificateExpiration
+        annotations:
+          message: A client certificate used to authenticate to the apiserver is expiring
+            in less than 24.0 hours.
+        expr: |
+          apiserver_client_certificate_expiration_seconds_count{job="apiserver"} > 0 and histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m]))) < 86400
+        labels:
+          severity: critical   
+  prometheus.yml: |-
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+    rule_files:
+      - /etc/prometheus/prometheus.rules
+    alerting:
+      alertmanagers:
+      - scheme: http
+        static_configs:
+        - targets:
+          - "alertmanager.monitoring.svc:9093"
+    scrape_configs:
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_endpoints_name]
+          regex: 'node-exporter'
+          action: keep
+      
+      - job_name: 'kubernetes-apiservers'
+
+        kubernetes_sd_configs:
+        - role: endpoints
+        scheme: https
+
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+          action: keep
+          regex: default;kubernetes;https
+
+      - job_name: 'kubernetes-nodes'
+
+        scheme: https
+
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+        kubernetes_sd_configs:
+        - role: node
+
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics     
+      
+      - job_name: 'kubernetes-pods'
+
+        kubernetes_sd_configs:
+        - role: pod
+
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_pod_name]
+          action: replace
+          target_label: kubernetes_pod_name
+      
+      - job_name: 'kube-state-metrics'
+        static_configs:
+          - targets: ['kube-state-metrics.kube-system.svc.cluster.local:8080']
+
+      - job_name: 'kubernetes-cadvisor'
+
+        scheme: https
+
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+        kubernetes_sd_configs:
+        - role: node
+
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+      
+      - job_name: 'kubernetes-service-endpoints'
+
+        kubernetes_sd_configs:
+        - role: endpoints
+
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+          action: replace
+          target_label: __scheme__
+          regex: (https?)
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+          action: replace
+          target_label: __address__
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          action: replace
+          target_label: kubernetes_name
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: monitoring
+## static provisioning of pv
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: prom-storage-pv
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/prom-data" ## stores the data in this path on worker1 when below pvc is refered by prometheus pod
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prom-storage-pvc
+  namespace: monitoring
+  labels:
+    vol: prom-storage
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service
+  namespace: monitoring
+  annotations:
+      prometheus.io/scrape: 'true'
+      prometheus.io/port:   '9090' 
+spec:
+  selector: 
+    app: prometheus-server
+  type: NodePort  
+  ports:
+    - port: 8080
+      targetPort: 9090 
+      nodePort: 30000 # access prometheus on any kubernetes node at port 30000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-deployment
+  namespace: monitoring
+  labels:
+    app: prometheus-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-server
+  template:
+    metadata:
+      labels:
+        app: prometheus-server
+    spec:
+      securityContext: # giving permissions for the pod to access hostpath of pv by running as root
+        runAsUser: 0
+        fsGroup: 0
+      containers:
+        - name: prometheus
+          image: prom/prometheus
+          args:
+            - "--storage.tsdb.retention.time=6h" # timeframe prometheus need to keep the data
+            - "--config.file=/etc/prometheus/prometheus.yml" ## config file path of prometheus server 
+            - "--storage.tsdb.path=/prometheus/" # path where scrapped data by prometheus is stored within the pod
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: prometheus-config-volume # this volume holds the config file of prometheus via config map
+              mountPath: /etc/prometheus/
+            - name: prometheus-storage-volume # this volume helps prometheus data to be persisted even after a pod restarts
+              mountPath: /prometheus/
+      #nodeSelector:
+      #    kubernetes.io/hostname: worker1 # we are restricting the pod to spin only on worker1 due to hostpath pv which we created for data persistence. In production setup usually storage classes other than manual and dynamic provision is used
+      volumes:
+        - name: prometheus-config-volume
+          configMap:
+            defaultMode: 420
+            name: prometheus-server-conf
+        - name: prometheus-storage-volume
+          persistentVolumeClaim:
+           claimName: prom-storage-pvc
